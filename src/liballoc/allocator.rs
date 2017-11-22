@@ -916,6 +916,77 @@ pub unsafe trait Alloc {
         }
     }
 
+    /// Behaves like `grow_in_place`, but also returns the whole size of
+    /// the returned block. For some `layout` inputs, like arrays, this
+    /// may include extra storage usable for additional data.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe for the same reasons that `realloc` is.
+    ///
+    /// # Errors
+    ///
+    /// Returning `Err` indicates that either memory is exhausted or
+    /// `layout` does not meet allocator's size or alignment
+    /// constraints, just as in `realloc`.
+    ///
+    /// Clients wishing to abort computation in response to an
+    /// reallocation error are encouraged to call the allocator's `oom`
+    /// method, rather than directly invoking `panic!` or similar.
+/// Attempts to extend the allocation referenced by `ptr` to fit `new_layout`.
+    ///
+    /// If this returns `Ok`, then the allocator has asserted that the
+    /// memory block referenced by `ptr` now fits `new_layout`, and thus can
+    /// be used to carry data of that layout. (The allocator is allowed to
+    /// expend effort to accomplish this, such as extending the memory block to
+    /// include successor blocks, or virtual memory tricks.)
+    ///
+    /// Regardless of what this method returns, ownership of the
+    /// memory block referenced by `ptr` has not been transferred, and
+    /// the contents of the memory block are unaltered.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because undefined behavior can result
+    /// if the caller does not ensure all of the following:
+    ///
+    /// * `ptr` must be currently allocated via this allocator,
+    ///
+    /// * `layout` must *fit* the `ptr` (see above); note the
+    ///   `new_layout` argument need not fit it,
+    ///
+    /// * `new_layout.size()` must not be less than `layout.size()`,
+    ///
+    /// * `new_layout.align()` must equal `layout.align()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CannotReallocInPlace)` when the allocator is
+    /// unable to assert that the memory block referenced by `ptr`
+    /// could fit `layout`.
+    ///
+    /// Note that one cannot pass `CannotReallocInPlace` to the `oom`
+    /// method; clients are expected either to be able to recover from
+    /// `grow_in_place` failures without aborting, or to fall back on
+    /// another reallocation method before resorting to an abort.
+    unsafe fn grow_in_place(&mut self,
+                            ptr: *mut u8,
+                            layout: Layout,
+                            new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        let _ = ptr; // this default implementation doesn't care about the actual address.
+        debug_assert!(new_layout.size >= layout.size);
+        debug_assert!(new_layout.align == layout.align);
+        let (_l, u) = self.usable_size(&layout);
+        // _l <= layout.size()                       [guaranteed by usable_size()]
+        //       layout.size() <= new_layout.size()  [required by this method]
+        if new_layout.size <= u {
+            return Ok(());
+        } else {
+            return Err(CannotReallocInPlace);
+        }
+    }
+
+
 
     // == COMMON USAGE PATTERNS ==
     // alloc_one, dealloc_one, alloc_array, realloc_array. dealloc_array

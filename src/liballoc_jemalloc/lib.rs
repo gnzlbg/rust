@@ -34,6 +34,7 @@ pub use contents::*;
 #[cfg(not(dummy_jemalloc))]
 mod contents {
     use core::ptr;
+    use core::mem;
 
     use alloc::heap::{Alloc, AllocErr, Layout};
     use alloc_system::System;
@@ -253,13 +254,45 @@ mod contents {
     #[no_mangle]
     #[rustc_std_internal_symbol]
     pub unsafe extern fn __rde_shrink_in_place(ptr: *mut u8,
-                                               _old_size: usize,
+                                               old_size: usize,
                                                old_align: usize,
                                                new_size: usize,
                                                new_align: usize) -> u8 {
+        let mut _excess = mem::uninitialized();
+        __rde_shrink_in_place_excess(ptr,
+                                     old_size, old_align,
+                                     new_size, new_align,
+                                     &mut _excess as *mut usize
+        )
+    }
+
+    #[no_mangle]
+    #[rustc_std_internal_symbol]
+    pub unsafe extern fn __rde_grow_in_place_excess(ptr: *mut u8,
+                                                    old_size: usize,
+                                                    old_align: usize,
+                                                    new_size: usize,
+                                                    new_align: usize,
+                                                    excess: *mut usize) -> u8 {
+        __rde_shrink_in_place_excess(ptr,
+                                     old_size, old_align,
+                                     new_size, new_align,
+                                     excess
+        )
+    }
+
+    #[no_mangle]
+    #[rustc_std_internal_symbol]
+    pub unsafe extern fn __rde_shrink_in_place_excess(ptr: *mut u8,
+                                                      _old_size: usize,
+                                                      old_align: usize,
+                                                      new_size: usize,
+                                                      new_align: usize,
+                                                      excess: *mut usize) -> u8 {
         if old_align == new_align {
             let flags = align_to_flags(new_align);
-            (xallocx(ptr as *mut c_void, new_size, 0, flags) == new_size) as u8
+            *excess = xallocx(ptr as *mut c_void, new_size, 0, flags);
+            (*excess >= new_size) as u8
         } else {
             0
         }
