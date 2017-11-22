@@ -13,7 +13,7 @@ use core::mem;
 use core::ops::Drop;
 use core::ptr::{self, Unique};
 use core::slice;
-use heap::{Alloc, Layout, Heap};
+use heap::{Alloc, Layout, Heap, Excess};
 use super::boxed::Box;
 
 /// A low-level utility for more ergonomically allocating, reallocating, and deallocating
@@ -87,20 +87,21 @@ impl<T, A: Alloc> RawVec<T, A> {
             alloc_guard(alloc_size);
 
             // handles ZSTs and `cap = 0` alike
-            let ptr = if alloc_size == 0 {
-                mem::align_of::<T>() as *mut u8
+            let (ptr, excess) = if alloc_size == 0 {
+                (mem::align_of::<T>() as *mut u8, cap)
             } else {
                 let align = mem::align_of::<T>();
                 let result = if zeroed {
-                    a.alloc_zeroed(Layout::from_size_align(alloc_size, align).unwrap())
+                    a.alloc_zeroed_excess(Layout::from_size_align(alloc_size, align).unwrap())
                 } else {
-                    a.alloc(Layout::from_size_align(alloc_size, align).unwrap())
+                    a.alloc_excess(Layout::from_size_align(alloc_size, align).unwrap())
                 };
                 match result {
-                    Ok(ptr) => ptr,
+                    Ok(Excess(ptr, excess)) => (ptr, excess),
                     Err(err) => a.oom(err),
                 }
             };
+            let cap = excess / mem::size_of::<T>();
 
             RawVec {
                 ptr: Unique::new_unchecked(ptr as *mut _),
@@ -426,12 +427,12 @@ impl<T, A: Alloc> RawVec<T, A> {
             let res = match self.current_layout() {
                 Some(layout) => {
                     let old_ptr = self.ptr.as_ptr() as *mut u8;
-                    self.a.realloc(old_ptr, layout, new_layout)
+                    self.a.realloc_excess(old_ptr, layout, new_layout)
                 }
-                None => self.a.alloc(new_layout),
+                None => self.a.alloc_excess(new_layout),
             };
-            let uniq = match res {
-                Ok(ptr) => Unique::new_unchecked(ptr as *mut T),
+            let (uniq, new_cap) = match res {
+                Ok(Excess(ptr, excess)) => (Unique::new_unchecked(ptr as *mut T), excess / mem::size_of::<T>()),
                 Err(e) => self.a.oom(e),
             };
             self.ptr = uniq;
@@ -528,12 +529,12 @@ impl<T, A: Alloc> RawVec<T, A> {
             let res = match self.current_layout() {
                 Some(layout) => {
                     let old_ptr = self.ptr.as_ptr() as *mut u8;
-                    self.a.realloc(old_ptr, layout, new_layout)
+                    self.a.realloc_excess(old_ptr, layout, new_layout)
                 }
-                None => self.a.alloc(new_layout),
+                None => self.a.alloc_excess(new_layout),
             };
-            let uniq = match res {
-                Ok(ptr) => Unique::new_unchecked(ptr as *mut T),
+            let (uniq, new_cap) = match res {
+                Ok(Excess(ptr, excess)) => (Unique::new_unchecked(ptr as *mut T), excess / mem::size_of::<T>()),
                 Err(e) => self.a.oom(e),
             };
             self.ptr = uniq;
@@ -586,9 +587,9 @@ impl<T, A: Alloc> RawVec<T, A> {
             let new_layout = Layout::new::<T>().repeat(new_cap).unwrap().0;
             // FIXME: may crash and burn on over-reserve
             alloc_guard(new_layout.size());
-            match self.a.grow_in_place(ptr, old_layout, new_layout) {
-                Ok(_) => {
-                    self.cap = new_cap;
+            match self.a.grow_in_place_excess(ptr, old_layout, new_layout) {
+                Ok(Excess(_, excess)) => {
+                    self.cap = excess / mem::size_of::<T>();
                     true
                 }
                 Err(_) => {
@@ -608,7 +609,7 @@ impl<T, A: Alloc> RawVec<T, A> {
     /// # Aborts
     ///
     /// Aborts on OOM.
-    pub fn shrink_to_fit(&mut self, amount: usize) {
+    pub fn shrink_to_fit(&mut self, mut amount: usize) {
         let elem_size = mem::size_of::<T>();
 
         // Set the `cap` because they might be about to promote to a `Box<[T]>`
@@ -647,10 +648,13 @@ impl<T, A: Alloc> RawVec<T, A> {
                 let align = mem::align_of::<T>();
                 let old_layout = Layout::from_size_align_unchecked(old_size, align);
                 let new_layout = Layout::from_size_align_unchecked(new_size, align);
-                match self.a.realloc(self.ptr.as_ptr() as *mut u8,
-                                     old_layout,
-                                     new_layout) {
-                    Ok(p) => self.ptr = Unique::new_unchecked(p as *mut T),
+                match self.a.realloc_excess(self.ptr.as_ptr() as *mut u8,
+                                            old_layout,
+                                            new_layout) {
+                    Ok(Excess(p, excess)) => {
+                        self.ptr = Unique::new_unchecked(p as *mut T);
+                        amount = excess / mem::size_of::<T>();
+                    },
                     Err(err) => self.a.oom(err),
                 }
             }
