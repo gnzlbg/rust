@@ -201,29 +201,43 @@ mod contents {
                                             align: usize,
                                             excess: *mut usize,
                                             err: *mut u8) -> *mut u8 {
-        let p = __rde_alloc(size, align, err);
-        if !p.is_null() {
-            let flags = align_to_flags(align);
+        let flags = align_to_flags(align);
+        let ptr = mallocx(size as size_t, flags) as *mut u8;
+        if ptr.is_null() {
+            let layout = Layout::from_size_align_unchecked(size, align);
+            ptr::write(err as *mut AllocErr,
+                       AllocErr::Exhausted { request: layout });
+        } else {
             *excess = nallocx(size, flags) as usize;
         }
-        return p
+        ptr
     }
 
     #[no_mangle]
     #[rustc_std_internal_symbol]
     pub unsafe extern fn __rde_realloc_excess(ptr: *mut u8,
-                                              old_size: usize,
+                                              _old_size: usize,
                                               old_align: usize,
                                               new_size: usize,
                                               new_align: usize,
                                               excess: *mut usize,
                                               err: *mut u8) -> *mut u8 {
-        let p = __rde_realloc(ptr, old_size, old_align, new_size, new_align, err);
-        if !p.is_null() {
-            let flags = align_to_flags(new_align);
+        if new_align != old_align {
+            ptr::write(err as *mut AllocErr,
+                       AllocErr::Unsupported { details: "can't change alignments" });
+            return 0 as *mut u8
+        }
+
+        let flags = align_to_flags(new_align);
+        let ptr = rallocx(ptr as *mut c_void, new_size, flags) as *mut u8;
+        if ptr.is_null() {
+            let layout = Layout::from_size_align_unchecked(new_size, new_align);
+            ptr::write(err as *mut AllocErr,
+                       AllocErr::Exhausted { request: layout });
+        } else {
             *excess = nallocx(new_size, flags) as usize;
         }
-        p
+        ptr
     }
 
     #[no_mangle]
