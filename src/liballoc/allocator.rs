@@ -781,6 +781,30 @@ pub unsafe trait Alloc {
             .map(|p| Excess(p, usable_size.1))
     }
 
+    /// Behaves like `alloc_excess`, but also ensures that the contents
+    /// are set to zero before being returned.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe for the same reasons that `alloc_excess` is.
+    ///
+    /// # Errors
+    ///
+    /// Returning `Err` indicates that either memory is exhausted or
+    /// `layout` does not meet allocator's size or alignment
+    /// constraints, just as in `alloc`.
+    ///
+    /// Clients wishing to abort computation in response to an
+    /// allocation error are encouraged to call the allocator's `oom`
+    /// method, rather than directly invoking `panic!` or similar.
+    unsafe fn alloc_zeroed_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
+        let excess = self.alloc_excess(layout);
+        if let Ok(ref excess) = excess {
+            ptr::write_bytes(excess.0, 0, excess.1);
+        }
+        excess
+    }
+
     /// Attempts to extend the allocation referenced by `ptr` to fit `new_layout`.
     ///
     /// If this returns `Ok`, then the allocator has asserted that the
