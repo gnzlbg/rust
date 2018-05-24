@@ -78,6 +78,7 @@
 #![cfg_attr(not(test), feature(exact_size_is_empty))]
 #![cfg_attr(not(test), feature(generator_trait))]
 #![cfg_attr(test, feature(rand, test))]
+#![feature(align_offset)]
 #![feature(allocator_api)]
 #![feature(allow_internal_unstable)]
 #![feature(ascii_ctype)]

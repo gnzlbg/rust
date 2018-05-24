@@ -16,7 +16,6 @@ use core::slice;
 
 use alloc::{Alloc, Layout, Global, oom};
 use alloc::CollectionAllocErr;
-use alloc::CollectionAllocErr::*;
 use boxed::Box;
 
 /// A low-level utility for more ergonomically allocating, reallocating, and deallocating
@@ -444,8 +443,8 @@ impl<T, A: Alloc> RawVec<T, A> {
     /// Aborts on OOM
     pub fn reserve_exact(&mut self, used_cap: usize, needed_extra_cap: usize) {
         match self.try_reserve_exact(used_cap, needed_extra_cap) {
-            Err(CapacityOverflow) => capacity_overflow(),
-            Err(AllocErr) => oom(),
+            Err(CollectionError::CapacityOverflow) => capacity_overflow(),
+            Err(CollectionError::AllocErr(AllocErr(_layout))) => oom(),
             Ok(()) => { /* yay */ }
          }
      }

@@ -16,7 +16,7 @@
             issue = "32838")]
 
 use core::intrinsics::{min_align_of_val, size_of_val};
-use core::ptr::{NonNull, Unique};
+use core::ptr::{Unique};
 use core::usize;
 
 #[doc(inline)]
@@ -51,53 +51,68 @@ pub const Heap: Global = Global;
 
 unsafe impl GlobalAlloc for Global {
     #[inline]
-    unsafe fn alloc(&self, layout: Layout) -> *mut Opaque {
-        let ptr = __rust_alloc(layout.size(), layout.align());
-        ptr as *mut Opaque
+    fn alloc(&self, layout: Layout) -> Result<Allocation, AllocErr> {
+        unsafe {
+            let ptr = __rust_alloc(layout.size(), layout.align());
+            Allocation::from_ptr(ptr as *mut Opaque, layout)
+        }
     }
 
     #[inline]
-    unsafe fn dealloc(&self, ptr: *mut Opaque, layout: Layout) {
-        __rust_dealloc(ptr as *mut u8, layout.size(), layout.align())
+    unsafe fn dealloc(&self, allocation: Allocation) {
+        __rust_dealloc(
+            allocation.ptr() as *mut u8,
+            allocation.layout().size(), allocation.layout().align()
+        )
     }
 
     #[inline]
-    unsafe fn realloc(&self, ptr: *mut Opaque, layout: Layout, new_size: usize) -> *mut Opaque {
-        let ptr = __rust_realloc(ptr as *mut u8, layout.size(), layout.align(), new_size);
-        ptr as *mut Opaque
+    unsafe fn realloc(&self, allocation: Allocation, new_layout: Layout)
+                      -> Result<Allocation, ReallocErr> {
+        if (allocation.ptr() as *mut u8).align_offset(new_layout.align()) != 0 {
+            return Err(ReallocErr::new(AllocErr::new(new_layout), allocation));
+        }
+        let ptr = __rust_realloc(
+            allocation.ptr() as *mut u8,
+            allocation.layout().size(),
+            allocation.layout().align(),
+            new_layout.size()
+        );
+        Allocation::from_ptr(ptr as *mut Opaque, new_layout)
+            .map_err(|e| ReallocErr::new(e, allocation))
     }
 
     #[inline]
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut Opaque {
-        let ptr = __rust_alloc_zeroed(layout.size(), layout.align());
-        ptr as *mut Opaque
+    fn alloc_zeroed(&self, layout: Layout) -> Result<Allocation, AllocErr> {
+        let ptr = __rust_alloc_zeroed(
+            layout.size(), layout.align()
+        );
+        Allocation::from_ptr(ptr as *mut Opaque, layout)
     }
 }
 
 unsafe impl Alloc for Global {
     #[inline]
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
-        NonNull::new(GlobalAlloc::alloc(self, layout)).ok_or(AllocErr)
+    fn alloc(&mut self, layout: Layout) -> Result<Allocation, AllocErr> {
+        GlobalAlloc::alloc(self, layout)
     }
 
     #[inline]
-    unsafe fn dealloc(&mut self, ptr: NonNull<Opaque>, layout: Layout) {
-        GlobalAlloc::dealloc(self, ptr.as_ptr(), layout)
+    unsafe fn dealloc(&mut self, allocation: Allocation) {
+        GlobalAlloc::dealloc(self, allocation)
     }
 
     #[inline]
     unsafe fn realloc(&mut self,
-                      ptr: NonNull<Opaque>,
-                      layout: Layout,
-                      new_size: usize)
-                      -> Result<NonNull<Opaque>, AllocErr>
+                      allocation: Allocation,
+                      new_layout: Layout) -> Result<Allocation, ReallocErr>
     {
-        NonNull::new(GlobalAlloc::realloc(self, ptr.as_ptr(), layout, new_size)).ok_or(AllocErr)
+        GlobalAlloc::realloc(self, allocation, new_layout)
     }
 
     #[inline]
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
-        NonNull::new(GlobalAlloc::alloc_zeroed(self, layout)).ok_or(AllocErr)
+    fn alloc_zeroed(&mut self, layout: Layout) -> Result<Allocation, AllocErr> {
+        GlobalAlloc::alloc_zeroed(self, layout)
     }
 }
 
@@ -107,16 +122,13 @@ unsafe impl Alloc for Global {
 #[lang = "exchange_malloc"]
 #[inline]
 unsafe fn exchange_malloc(size: usize, align: usize) -> *mut u8 {
-    if size == 0 {
-        align as *mut u8
-    } else {
-        let layout = Layout::from_size_align_unchecked(size, align);
-        let ptr = Global.alloc(layout);
-        if !ptr.is_null() {
-            ptr as *mut u8
-        } else {
-            oom()
+    if let Ok(layout) = Layout::from_size_align(size, align) {
+        if let Ok(alloc) = Global.alloc(layout) {
+            return alloc.ptr() as *mut u8;
         }
+        oom()
+    } else {
+        align as *mut u8
     }
 }
 
@@ -126,11 +138,19 @@ pub(crate) unsafe fn box_free<T: ?Sized>(ptr: Unique<T>) {
     let ptr = ptr.as_ptr();
     let size = size_of_val(&*ptr);
     let align = min_align_of_val(&*ptr);
-    // We do not allocate for Box<T> when T is ZST, so deallocation is also not necessary.
-    if size != 0 {
-        let layout = Layout::from_size_align_unchecked(size, align);
-        Global.dealloc(ptr as *mut Opaque, layout);
+    if let Ok(layout) = Layout::from_size_align(size, align) {
+        let alloc = Allocation::from_ptr(ptr as *mut Opaque, layout);
+        if let Ok(alloc) = alloc  {
+            Global.dealloc(alloc);
+        } else {
+            debug_assert!(ptr.is_null(), "trying to deallocate null pointer with non-zero layout");
+            debug_assert!(false, "trying to deallocate pointer with non-fitting layout");
+        }
     }
+    // We do not allocate for Box<T> when T is ZST, so deallocation is also not
+    // necessary.
+    debug_assert!(ptr as *const u8 == align as *const u8,
+                  "incorrect pointer value for Unique<T> where T: ZST");
 }
 
 pub fn oom() -> ! {
